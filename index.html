@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>P2P Text Chat (Manual Signaling) - Fixed</title>
+    <style>
+        :root {
+            --bg: #0f1724;
+            --card: #0b1220;
+            --accent: #7c3aed;
+            --muted: #9aa4b2
+        }
+
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            font-family: Inter, Segoe UI, Roboto, Arial;
+            color: #e6eef6;
+            background: linear-gradient(180deg, #071026 0%, #081226 100%);
+        }
+
+        .wrap {
+            max-width: 920px;
+            margin: 24px auto;
+            padding: 18px;
+            display: grid;
+            grid-template-columns: 360px 1fr;
+            gap: 18px
+        }
+
+        .card {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 14px;
+            box-shadow: 0 6px 24px rgba(2, 6, 23, 0.6)
+        }
+
+        h1 {
+            font-size: 18px;
+            margin: 0 0 8px
+        }
+
+        textarea,
+        input[type=text] {
+            width: 100%;
+            box-sizing: border-box;
+            border-radius: 8px;
+            padding: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            background: transparent;
+            color: inherit;
+            font-family: monospace
+        }
+
+        button {
+            background: var(--accent);
+            border: none;
+            color: white;
+            padding: 8px 10px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px
+        }
+
+        .messages {
+            height: 420px;
+            overflow: auto;
+            padding: 12px;
+            border-radius: 10px;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
+        }
+
+        .msg {
+            margin-bottom: 8px;
+        }
+
+        .me {
+            text-align: right
+        }
+
+        .bubble {
+            display: inline-block;
+            padding: 8px 10px;
+            border-radius: 10px;
+            max-width: 75%;
+            font-size: 14px
+        }
+
+        .bubble.in {
+            background: #0b2032
+        }
+
+        .bubble.out {
+            background: linear-gradient(90deg, #7c3aed, #4f46e5);
+            color: white
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 8px
+        }
+
+        @media (max-width:900px) {
+            .wrap {
+                grid-template-columns: 1fr
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <div class="card">
+            <h1>P2P Manual Signaling (Text only)</h1>
+            <div class="small">Manual copy/paste signaling — create offer on one laptop, paste on the other and create
+                answer, copy answer back.</div>
+
+            <label style="margin-top:10px;">Local SDP (copy & send to peer)</label>
+            <textarea id="localSDP" rows="6" readonly></textarea>
+            <div class="row" style="margin-top:8px">
+                <button id="createOffer">Create Offer</button>
+                <!-- Create Answer is enabled by default now -->
+                <button id="createAnswer">Create Answer</button>
+            </div>
+
+            <label style="margin-top:10px;">Remote SDP (paste peer's SDP here)</label>
+            <textarea id="remoteSDP" rows="6" placeholder="Paste peer's SDP (offer or answer) here"></textarea>
+            <div class="row" style="margin-top:8px">
+                <button id="setRemote">Set Remote SDP</button>
+                <button id="copyLocal"
+                    style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)">Copy
+                    Local</button>
+            </div>
+
+            <div style="margin-top:12px;color:var(--muted);font-size:13px">
+                Usage tip:<br>
+                1) On Laptop A click <strong>Create Offer</strong>, copy Local SDP and send to Laptop B.<br>
+                2) On Laptop B paste that into Remote SDP and click <strong>Create Answer</strong>. Copy Local SDP from
+                B and send to A.<br>
+                3) On Laptop A paste B's SDP into Remote SDP and click <strong>Set Remote SDP</strong>.
+            </div>
+        </div>
+
+        <div class="card" style="display:flex;flex-direction:column">
+            <h1>Chat</h1>
+            <div class="messages" id="messages"></div>
+
+            <div class="controls" style="margin-top:12px">
+                <input type="text" id="messageInput" placeholder="Type a message..." />
+                <button id="sendBtn" disabled>Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Simple WebRTC P2P text chat (manual signaling)
+        const cfg = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+        let pc = null;
+        let dc = null;
+
+        const localSDP = document.getElementById('localSDP');
+        const remoteSDP = document.getElementById('remoteSDP');
+        const createOfferBtn = document.getElementById('createOffer');
+        const createAnswerBtn = document.getElementById('createAnswer');
+        const setRemoteBtn = document.getElementById('setRemote');
+        const copyLocalBtn = document.getElementById('copyLocal');
+        const messages = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+
+        function log(text, me = false) {
+            const el = document.createElement('div'); el.className = 'msg ' + (me ? 'me' : '');
+            const b = document.createElement('div'); b.className = 'bubble ' + (me ? 'out' : 'in');
+            b.textContent = text;
+            el.appendChild(b);
+            messages.appendChild(el);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function ensurePC(isOfferSide = false) {
+            if (pc) return pc;
+            pc = new RTCPeerConnection(cfg);
+
+            pc.oniceconnectionstatechange = () => {
+                // optional: show status
+                // console.log('ICE', pc.iceConnectionState);
+            };
+
+            pc.ondatachannel = ev => {
+                setupDataChannel(ev.channel);
+            };
+
+            if (isOfferSide) {
+                const channel = pc.createDataChannel('chat');
+                setupDataChannel(channel);
+            }
+            return pc;
+        }
+
+        function setupDataChannel(channel) {
+            dc = channel;
+            dc.onopen = () => {
+                sendBtn.disabled = false;
+                log('[Data channel open — you can send messages now]', false);
+            };
+            dc.onclose = () => {
+                sendBtn.disabled = true;
+                log('[Data channel closed]', false);
+            };
+            dc.onmessage = e => {
+                log(e.data, false);
+            };
+        }
+
+        createOfferBtn.onclick = async () => {
+            try {
+                ensurePC(true);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                // small delay to allow ICE candidates to be included if any
+                await new Promise(r => setTimeout(r, 600));
+                localSDP.value = JSON.stringify(pc.localDescription);
+                alert('Offer created — copy Local SDP and send to peer.');
+            } catch (err) { alert('Offer error: ' + err); console.error(err); }
+        };
+
+        createAnswerBtn.onclick = async () => {
+            // On Laptop B: they will paste A's offer into remoteSDP, then click Create Answer
+            try {
+                const txt = remoteSDP.value.trim();
+                if (!txt) return alert('Paste the peer OFFER into Remote SDP before creating an answer.');
+                const remote = JSON.parse(txt);
+
+                ensurePC(false);
+                await pc.setRemoteDescription(remote);
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                await new Promise(r => setTimeout(r, 600));
+                localSDP.value = JSON.stringify(pc.localDescription);
+                alert('Answer created — copy Local SDP and send back to the offerer.');
+            } catch (err) { alert('Create Answer failed: ' + err); console.error(err); }
+        };
+
+        setRemoteBtn.onclick = async () => {
+            try {
+                const txt = remoteSDP.value.trim();
+                if (!txt) return alert('Paste the peer SDP into Remote SDP before clicking Set Remote SDP.');
+                const remote = JSON.parse(txt);
+                // ensure pc exists (if user forgot to click Create Offer/Answer, we'll create a PC)
+                // but if this side was the offerer, pc should exist from Create Offer.
+                ensurePC(false);
+                await pc.setRemoteDescription(remote);
+                alert('Remote SDP set.');
+            } catch (err) { alert('Set remote failed: ' + err); console.error(err); }
+        };
+
+        copyLocalBtn.onclick = async () => {
+            try {
+                await navigator.clipboard.writeText(localSDP.value);
+                alert('Local SDP copied to clipboard.');
+            } catch (e) { alert('Copy failed: ' + e); }
+        };
+
+        sendBtn.onclick = () => {
+            const txt = messageInput.value.trim();
+            if (!txt) return;
+            if (!dc || dc.readyState !== 'open') return alert('Data channel not open yet.');
+            dc.send(txt);
+            log(txt, true);
+            messageInput.value = '';
+        };
+
+        messageInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendBtn.click(); });
+
+        // cleanup on unload
+        window.addEventListener('beforeunload', () => { try { if (dc) dc.close(); if (pc) pc.close(); } catch { } });
+    </script>
+</body>
+
+</html>
